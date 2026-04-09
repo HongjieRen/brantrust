@@ -29,7 +29,10 @@ const OUTPUT_DIR = join(process.env.HOME, 'ai-outputs');
 
 if (flags.list) {
   if (!existsSync(OUTPUT_DIR)) { console.log('No runs yet.'); process.exit(0); }
-  const runs = readdirSync(OUTPUT_DIR).filter(d => !d.endsWith('.md')).sort().reverse().slice(0, 20);
+  const runs = readdirSync(OUTPUT_DIR, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => d.name)
+    .sort().reverse().slice(0, 20);
   if (!runs.length) { console.log('No runs yet.'); process.exit(0); }
   runs.forEach(r => {
     const report = join(OUTPUT_DIR, r, 'report.md');
@@ -54,7 +57,7 @@ let userPrompt = positional.join(' ');
 
 // Read stdin if piped
 if (!process.stdin.isTTY) {
-  const stdinData = readFileSync('/dev/stdin', 'utf8').trim();
+  const stdinData = readFileSync(0, 'utf8').trim();
   if (stdinData) userPrompt = userPrompt ? `${userPrompt}\n\n<context>\n${stdinData}\n</context>` : stdinData;
 }
 
@@ -84,7 +87,7 @@ if (!userPrompt) {
 }
 
 const workDir = flags.dir ? resolve(flags.dir) : process.cwd();
-const timeoutMs = parseInt(flags.timeout) * 1000;
+const timeoutMs = (parseInt(flags.timeout, 10) || 120) * 1000;
 const judgeModel = flags['judge-model'] || 'claude';
 const noJudge = flags.judge === false;
 const noSave = flags.save === false;
@@ -158,14 +161,21 @@ function adaptCodex(raw) {
   return fallback(raw.stdout);
 }
 
+function parseGeminiResponse(stdout) {
+  const jsonStart = stdout.indexOf('{');
+  if (jsonStart === -1) return null;
+  const j = JSON.parse(stdout.slice(jsonStart));
+  if (j.response) return j.response;
+  for (const v of Object.values(j)) {
+    if (v && typeof v === 'object' && typeof v.response === 'string') return v.response;
+  }
+  return null;
+}
+
 function adaptGemini(raw) {
   try {
-    // Strip MCP noise prefix, find JSON
-    const start = raw.stdout.indexOf('{');
-    if (start !== -1) {
-      const j = JSON.parse(raw.stdout.slice(start));
-      if (j.response) return { content: j.response, model: 'gemini', parse_mode: 'json' };
-    }
+    const response = parseGeminiResponse(raw.stdout);
+    if (response) return { content: response, model: 'gemini', parse_mode: 'json' };
   } catch { /* fall through */ }
   return fallback(raw.stdout);
 }
@@ -178,9 +188,11 @@ function fallback(raw) {
 // ─── Normalize ────────────────────────────────────────────────────────────────
 
 function extractSection(text, tag) {
-  const re = new RegExp(`\\[${tag}\\]([\\s\\S]*?)(?=\\[|$)`, 'i');
-  const m = text.match(re);
-  return m ? m[1].trim().split('\n').map(l => l.trim()).filter(Boolean) : [];
+  const idx = text.indexOf(`[${tag}]`);
+  if (idx === -1) return [];
+  const end = text.indexOf('[', idx + tag.length + 2);
+  const section = end === -1 ? text.slice(idx) : text.slice(idx, end);
+  return section.split('\n').slice(1).map(l => l.trim()).filter(Boolean);
 }
 
 function normalize(provider, raw, adapted, durationMs) {
@@ -214,12 +226,12 @@ function summarize(r) {
 // ─── Judge Prompt ─────────────────────────────────────────────────────────────
 
 function buildJudgePrompt(question, results) {
-  const summaries = results
-    .filter(r => !r.error)
-    .map((r, i) => `--- 候选 ${String.fromCharCode(65 + i)} (${r.provider}) ---\n${summarize(r)}`)
+  const valid = results.filter(r => !r.error);
+  const summaries = valid
+    .map((r, i) => `--- 候选 ${String.fromCharCode(65 + i)} ---\n${summarize(r)}`)
     .join('\n\n');
 
-  return `你是一个高级技术评审。${results.filter(r => !r.error).length} 个 AI 模型对同一问题给出了各自的回答。
+  return `你是一个高级技术评审。${valid.length} 个 AI 模型对同一问题给出了各自的回答。
 
 问题：${question}
 
@@ -272,10 +284,7 @@ async function runJudge(question, results) {
     }
     return raw.stdout.trim();
   } else {
-    const start = raw.stdout.indexOf('{');
-    if (start !== -1) {
-      try { const j = JSON.parse(raw.stdout.slice(start)); if (j.response) return j.response; } catch { /* skip */ }
-    }
+    try { const response = parseGeminiResponse(raw.stdout); if (response) return response; } catch { /* skip */ }
     return raw.stdout.trim();
   }
 }
@@ -385,7 +394,7 @@ async function main() {
 
   // Save
   if (!noSave) {
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 23);
     const runDir = join(OUTPUT_DIR, ts);
     saveArtifacts(runDir, userPrompt, raws, results, judgeOutput);
     process.stderr.write(`\n[saved → ${runDir}]\n`);
