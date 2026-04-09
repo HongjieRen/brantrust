@@ -1,0 +1,395 @@
+#!/usr/bin/env node
+'use strict';
+
+const { spawn } = require('child_process');
+const { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } = require('fs');
+const { join, resolve } = require('path');
+
+// ─── Arg Parsing ─────────────────────────────────────────────────────────────
+
+const flags = { skip: [], timeout: 120, 'judge-model': 'claude' };
+const positional = [];
+const argv = process.argv.slice(2);
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i];
+  if (a === '--skip') { flags.skip.push(argv[++i]); continue; }
+  if (a.startsWith('--no-')) { flags[a.slice(5)] = false; continue; }
+  if (a.startsWith('--')) {
+    const key = a.slice(2);
+    const next = argv[i + 1];
+    flags[key] = (!next || next.startsWith('--')) ? true : (i++, next);
+  } else {
+    positional.push(a);
+  }
+}
+
+const OUTPUT_DIR = join(process.env.HOME, 'ai-outputs');
+
+// ─── --list mode ─────────────────────────────────────────────────────────────
+
+if (flags.list) {
+  if (!existsSync(OUTPUT_DIR)) { console.log('No runs yet.'); process.exit(0); }
+  const runs = readdirSync(OUTPUT_DIR).filter(d => !d.endsWith('.md')).sort().reverse().slice(0, 20);
+  if (!runs.length) { console.log('No runs yet.'); process.exit(0); }
+  runs.forEach(r => {
+    const report = join(OUTPUT_DIR, r, 'report.md');
+    if (existsSync(report)) {
+      const first = readFileSync(report, 'utf8').split('\n').find(l => l.startsWith('**问题'));
+      console.log(`${r}  ${first || ''}`);
+    }
+  });
+  process.exit(0);
+}
+
+// ─── --strict placeholder ────────────────────────────────────────────────────
+
+if (flags.strict) {
+  console.log('[brantrust] --strict mode (two-stage Judge + swap-compare) is planned for v2.');
+  process.exit(0);
+}
+
+// ─── Prompt ──────────────────────────────────────────────────────────────────
+
+let userPrompt = positional.join(' ');
+
+// Read stdin if piped
+if (!process.stdin.isTTY) {
+  const stdinData = readFileSync('/dev/stdin', 'utf8').trim();
+  if (stdinData) userPrompt = userPrompt ? `${userPrompt}\n\n<context>\n${stdinData}\n</context>` : stdinData;
+}
+
+// Read context file
+if (flags['context-file']) {
+  try {
+    const ctx = readFileSync(resolve(flags['context-file']), 'utf8').slice(0, 8000);
+    userPrompt = `${userPrompt}\n\n<context-file>\n${ctx}\n</context-file>`;
+  } catch { console.error(`[warn] Cannot read context file: ${flags['context-file']}`); }
+}
+
+if (!userPrompt) {
+  console.error('Usage: brantrust [options] "your question"');
+  console.error('       cat file | brantrust "explain this"');
+  console.error('\nOptions:');
+  console.error('  --skip <model>      Skip a model (claude|codex|gemini), repeatable');
+  console.error('  --no-judge          Show raw results only');
+  console.error('  --judge-model       Judge model: claude|codex|gemini (default: claude)');
+  console.error('  --timeout <sec>     Per-model timeout in seconds (default: 120)');
+  console.error('  --dir <path>        Working directory for CLI tools');
+  console.error('  --context-file <f>  Append file content as context (max 8000 chars)');
+  console.error('  --no-save           Do not save results to disk');
+  console.error('  --json              Print full JSON result to stdout');
+  console.error('  --list              List recent runs');
+  console.error('  --strict            [v2] Full two-stage Judge pipeline');
+  process.exit(1);
+}
+
+const workDir = flags.dir ? resolve(flags.dir) : process.cwd();
+const timeoutMs = parseInt(flags.timeout) * 1000;
+const judgeModel = flags['judge-model'] || 'claude';
+const noJudge = flags.judge === false;
+const noSave = flags.save === false;
+
+// ─── Generator Prompt ────────────────────────────────────────────────────────
+
+const GENERATOR_SYSTEM = `你是一个独立思考的高级专家。请基于自己的判断给出高质量、可执行、可审查的回答。
+
+要求：
+1. 独立思考，不要假设其他专家会补充你遗漏的部分
+2. 优先给出清晰、可执行的内容
+3. 明确区分结论、依据、假设、风险
+4. 输出简洁但完整，避免废话
+5. 如有不确定点，直接说明
+
+请按以下结构回答（用中文标签分隔）：
+
+[核心结论]
+（简洁的主要结论，2-5条）
+
+[详细方案]
+（可执行的具体内容）
+
+[关键假设]
+（你的回答依赖哪些假设）
+
+[风险与不确定性]
+（需要注意的风险或你不确定的点）`;
+
+// ─── Run subprocess ───────────────────────────────────────────────────────────
+
+function runProcess(cmd, args, opts = {}) {
+  const ac = new AbortController();
+  const cwd = opts.cwd || workDir;
+  const proc = spawn(cmd, args, { signal: ac.signal, stdio: ['ignore', 'pipe', 'pipe'], cwd });
+  let stdout = '', stderr = '';
+  proc.stdout.on('data', d => stdout += d);
+  proc.stderr.on('data', d => stderr += d);
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  return new Promise(resolve => {
+    const done = code => { clearTimeout(timer); resolve({ stdout, stderr, code }); };
+    proc.on('close', done);
+    proc.on('error', err => done(err.name === 'AbortError' ? 'timeout' : -1));
+  });
+}
+
+// ─── Adapters ────────────────────────────────────────────────────────────────
+
+function adaptClaude(raw) {
+  try {
+    const j = JSON.parse(raw.stdout);
+    return { content: j.result, model: Object.keys(j.modelUsage || {})[0] || 'claude', parse_mode: 'json' };
+  } catch {
+    return fallback(raw.stdout);
+  }
+}
+
+function adaptCodex(raw) {
+  try {
+    const lines = raw.stdout.trim().split('\n');
+    const events = [];
+    for (const l of lines) {
+      try { events.push(JSON.parse(l)); } catch { /* skip non-JSON */ }
+    }
+    const msg = events.filter(e => e.type === 'item.completed' && e.item?.type === 'agent_message').pop();
+    if (msg?.item?.text) return { content: msg.item.text, model: 'codex', parse_mode: 'jsonl' };
+    // fallback: last agent message
+    const last = events.filter(e => e.type === 'item.completed').pop();
+    if (last?.item?.text) return { content: last.item.text, model: 'codex', parse_mode: 'jsonl' };
+  } catch { /* fall through */ }
+  return fallback(raw.stdout);
+}
+
+function adaptGemini(raw) {
+  try {
+    // Strip MCP noise prefix, find JSON
+    const start = raw.stdout.indexOf('{');
+    if (start !== -1) {
+      const j = JSON.parse(raw.stdout.slice(start));
+      if (j.response) return { content: j.response, model: 'gemini', parse_mode: 'json' };
+    }
+  } catch { /* fall through */ }
+  return fallback(raw.stdout);
+}
+
+function fallback(raw) {
+  const content = raw.slice(-2000).trim() || '[no output]';
+  return { content, model: 'unknown', parse_mode: 'fallback' };
+}
+
+// ─── Normalize ────────────────────────────────────────────────────────────────
+
+function extractSection(text, tag) {
+  const re = new RegExp(`\\[${tag}\\]([\\s\\S]*?)(?=\\[|$)`, 'i');
+  const m = text.match(re);
+  return m ? m[1].trim().split('\n').map(l => l.trim()).filter(Boolean) : [];
+}
+
+function normalize(provider, raw, adapted, durationMs) {
+  const { content, model, parse_mode } = adapted;
+  return {
+    provider,
+    model,
+    content,
+    key_claims: extractSection(content, '核心结论'),
+    assumptions: extractSection(content, '关键假设'),
+    risks: extractSection(content, '风险与不确定性'),
+    duration_ms: durationMs,
+    parse_mode,
+    error: raw.code === 'timeout' ? 'timeout' : (raw.code !== 0 ? `exit ${raw.code}` : null),
+  };
+}
+
+// ─── Summary for Judge (token-efficient) ─────────────────────────────────────
+
+function summarize(r) {
+  const claims = r.key_claims.length ? r.key_claims.slice(0, 5).join('\n') : r.content.slice(0, 600);
+  const risks = r.risks.slice(0, 3).join('\n');
+  const assum = r.assumptions.slice(0, 3).join('\n');
+  return [
+    `【核心结论】\n${claims}`,
+    risks ? `【风险】\n${risks}` : '',
+    assum ? `【假设】\n${assum}` : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+// ─── Judge Prompt ─────────────────────────────────────────────────────────────
+
+function buildJudgePrompt(question, results) {
+  const summaries = results
+    .filter(r => !r.error)
+    .map((r, i) => `--- 候选 ${String.fromCharCode(65 + i)} (${r.provider}) ---\n${summarize(r)}`)
+    .join('\n\n');
+
+  return `你是一个高级技术评审。${results.filter(r => !r.error).length} 个 AI 模型对同一问题给出了各自的回答。
+
+问题：${question}
+
+${summaries}
+
+请按以下结构输出你的评审（用中文标签分隔）：
+
+## 核心共识
+（各模型都认同的关键结论）
+
+## 独特洞见
+（某个模型独有但有价值的见解，注明来自哪个候选）
+
+## 分歧裁决
+（如果存在矛盾，给出你的判断和理由；如无分歧则写"无明显分歧"）
+
+## 集大成方案
+（综合各方的最优可执行方案）
+
+## 风险提示
+（需要注意的假设、风险或待验证项）`;
+}
+
+// ─── Run Judge ────────────────────────────────────────────────────────────────
+
+async function runJudge(question, results) {
+  const judgePrompt = buildJudgePrompt(question, results);
+  process.stderr.write(`\n[Judge (${judgeModel}): running...]\n`);
+  const start = Date.now();
+
+  let raw;
+  if (judgeModel === 'claude') {
+    raw = await runProcess('claude', ['-p', judgePrompt, '--no-session-persistence']);
+  } else if (judgeModel === 'codex') {
+    raw = await runProcess('codex', ['exec', judgePrompt, '--skip-git-repo-check', '--ephemeral']);
+  } else {
+    raw = await runProcess('gemini', ['-p', judgePrompt]);
+  }
+
+  const ms = Date.now() - start;
+  process.stderr.write(`[Judge: done ${(ms/1000).toFixed(1)}s]\n`);
+
+  // Extract text from judge output
+  if (judgeModel === 'claude') {
+    try { return JSON.parse(raw.stdout).result; } catch { return raw.stdout.trim(); }
+  } else if (judgeModel === 'codex') {
+    const lines = raw.stdout.trim().split('\n');
+    for (const l of lines.reverse()) {
+      try { const e = JSON.parse(l); if (e.item?.text) return e.item.text; } catch { /* skip */ }
+    }
+    return raw.stdout.trim();
+  } else {
+    const start = raw.stdout.indexOf('{');
+    if (start !== -1) {
+      try { const j = JSON.parse(raw.stdout.slice(start)); if (j.response) return j.response; } catch { /* skip */ }
+    }
+    return raw.stdout.trim();
+  }
+}
+
+// ─── Save artifacts ───────────────────────────────────────────────────────────
+
+function saveArtifacts(runDir, question, raws, results, judgeOutput) {
+  mkdirSync(join(runDir, 'raw'), { recursive: true });
+  for (const [name, raw] of Object.entries(raws)) {
+    writeFileSync(join(runDir, 'raw', `${name}.txt`), raw.stdout || '');
+  }
+  writeFileSync(join(runDir, 'normalized.json'), JSON.stringify(results, null, 2));
+
+  const lines = [
+    `**问题**: ${question}`,
+    `**时间**: ${new Date().toISOString()}`,
+    '',
+    '---',
+    '',
+  ];
+  for (const r of results) {
+    lines.push(`## ${r.provider} (${(r.duration_ms/1000).toFixed(1)}s${r.error ? ` ⚠ ${r.error}` : ''})`);
+    lines.push('');
+    lines.push(r.content || '[no content]');
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+  }
+  if (judgeOutput) {
+    lines.push('# 🧠 Judge 融合报告');
+    lines.push('');
+    lines.push(judgeOutput);
+  }
+  writeFileSync(join(runDir, 'report.md'), lines.join('\n'));
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  const PROVIDERS = [
+    {
+      name: 'claude',
+      cmd: 'claude',
+      args: ['-p', `${GENERATOR_SYSTEM}\n\n${userPrompt}`, '--output-format', 'json', '--no-session-persistence'],
+      adapt: adaptClaude,
+    },
+    {
+      name: 'codex',
+      cmd: 'codex',
+      args: ['exec', `${GENERATOR_SYSTEM}\n\n${userPrompt}`, '--json', '--skip-git-repo-check', '--ephemeral'],
+      adapt: adaptCodex,
+    },
+    {
+      name: 'gemini',
+      cmd: 'gemini',
+      args: ['-p', `${GENERATOR_SYSTEM}\n\n${userPrompt}`, '-o', 'json'],
+      adapt: adaptGemini,
+    },
+  ].filter(p => !flags.skip.includes(p.name));
+
+  process.stderr.write(`[brantrust] Running ${PROVIDERS.map(p => p.name).join(', ')} in parallel...\n`);
+
+  const starts = {};
+  PROVIDERS.forEach(p => { starts[p.name] = Date.now(); });
+
+  const rawResults = await Promise.allSettled(
+    PROVIDERS.map(p => runProcess(p.cmd, p.args))
+  );
+
+  const raws = {};
+  const results = [];
+  for (let i = 0; i < PROVIDERS.length; i++) {
+    const p = PROVIDERS[i];
+    const raw = rawResults[i].status === 'fulfilled' ? rawResults[i].value : { stdout: '', stderr: '', code: -1 };
+    raws[p.name] = raw;
+    const ms = Date.now() - starts[p.name];
+    const adapted = p.adapt(raw);
+    const r = normalize(p.name, raw, adapted, ms);
+    results.push(r);
+    const status = r.error ? `⚠ ${r.error}` : `✓ ${(ms/1000).toFixed(1)}s`;
+    process.stderr.write(`[${p.name}: ${status}]\n`);
+  }
+
+  // Print raw results
+  console.log('\n' + '═'.repeat(60));
+  for (const r of results) {
+    console.log(`\n## ${r.provider.toUpperCase()}${r.error ? ` (${r.error})` : ''}\n`);
+    console.log(r.content || '[no output]');
+  }
+
+  // Judge
+  let judgeOutput = null;
+  const validResults = results.filter(r => !r.error && r.content && r.content !== '[no output]');
+  if (!noJudge && validResults.length >= 2) {
+    judgeOutput = await runJudge(userPrompt, validResults);
+    console.log('\n' + '═'.repeat(60));
+    console.log('\n# 🧠 BRANTRUST — 智囊团融合报告\n');
+    console.log(judgeOutput);
+  } else if (!noJudge && validResults.length < 2) {
+    console.log('\n[brantrust] Not enough successful responses for Judge (need ≥ 2).');
+  }
+
+  // JSON output
+  if (flags.json) {
+    process.stdout.write('\n' + JSON.stringify({ prompt: userPrompt, results, judge: judgeOutput }, null, 2) + '\n');
+  }
+
+  // Save
+  if (!noSave) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const runDir = join(OUTPUT_DIR, ts);
+    saveArtifacts(runDir, userPrompt, raws, results, judgeOutput);
+    process.stderr.write(`\n[saved → ${runDir}]\n`);
+  }
+}
+
+main().catch(e => { console.error('[brantrust error]', e.message); process.exit(1); });
