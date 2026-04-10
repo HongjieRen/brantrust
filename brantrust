@@ -266,9 +266,9 @@ async function runJudge(question, results) {
   if (judgeModel === 'claude') {
     raw = await runProcess('claude', ['-p', judgePrompt, '--no-session-persistence']);
   } else if (judgeModel === 'codex') {
-    raw = await runProcess('codex', ['exec', judgePrompt, '--skip-git-repo-check', '--ephemeral']);
+    raw = await runProcess('codex', ['exec', '--json', '--skip-git-repo-check', '--ephemeral', judgePrompt]);
   } else {
-    raw = await runProcess('gemini', ['-p', judgePrompt]);
+    raw = await runProcess('gemini', ['-p', judgePrompt, '-o', 'json', '--allowed-mcp-server-names', 'sequential-thinking']);
   }
 
   const ms = Date.now() - start;
@@ -334,13 +334,13 @@ async function main() {
     {
       name: 'codex',
       cmd: 'codex',
-      args: ['exec', `${GENERATOR_SYSTEM}\n\n${userPrompt}`, '--json', '--skip-git-repo-check', '--ephemeral'],
+      args: ['exec', '--json', '--skip-git-repo-check', '--ephemeral', `${GENERATOR_SYSTEM}\n\n${userPrompt}`],
       adapt: adaptCodex,
     },
     {
       name: 'gemini',
       cmd: 'gemini',
-      args: ['-p', `${GENERATOR_SYSTEM}\n\n${userPrompt}`, '-o', 'json'],
+      args: ['-p', `${GENERATOR_SYSTEM}\n\n${userPrompt}`, '-o', 'json', '--allowed-mcp-server-names', 'sequential-thinking'],
       adapt: adaptGemini,
     },
   ].filter(p => !flags.skip.includes(p.name));
