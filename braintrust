@@ -47,7 +47,7 @@ if (flags.list) {
 // ─── --strict placeholder ────────────────────────────────────────────────────
 
 if (flags.strict) {
-  console.log('[brantrust] --strict mode (two-stage Judge + swap-compare) is planned for v2.');
+  console.log('[braintrust] --strict mode (two-stage Judge + swap-compare) is planned for v2.');
   process.exit(0);
 }
 
@@ -70,8 +70,8 @@ if (flags['context-file']) {
 }
 
 if (!userPrompt) {
-  console.error('Usage: brantrust [options] "your question"');
-  console.error('       cat file | brantrust "explain this"');
+  console.error('Usage: braintrust [options] "your question"');
+  console.error('       cat file | braintrust "explain this"');
   console.error('\nOptions:');
   console.error('  --skip <model>      Skip a model (claude|codex|gemini), repeatable');
   console.error('  --no-judge          Show raw results only');
@@ -345,7 +345,7 @@ async function main() {
     },
   ].filter(p => !flags.skip.includes(p.name));
 
-  process.stderr.write(`[brantrust] Running ${PROVIDERS.map(p => p.name).join(', ')} in parallel...\n`);
+  process.stderr.write(`[braintrust] Running ${PROVIDERS.map(p => p.name).join(', ')} in parallel...\n`);
 
   const starts = {};
   PROVIDERS.forEach(p => { starts[p.name] = Date.now(); });
@@ -384,7 +384,7 @@ async function main() {
     console.log('\n# 🧠 BRANTRUST — 智囊团融合报告\n');
     console.log(judgeOutput);
   } else if (!noJudge && validResults.length < 2) {
-    console.log('\n[brantrust] Not enough successful responses for Judge (need ≥ 2).');
+    console.log('\n[braintrust] Not enough successful responses for Judge (need ≥ 2).');
   }
 
   // JSON output
@@ -401,4 +401,4 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error('[brantrust error]', e.message); process.exit(1); });
+main().catch(e => { console.error('[braintrust error]', e.message); process.exit(1); });
