@@ -142,7 +142,12 @@ function normalize(provider, raw, adapted, durationMs) {
     risks: extractSection(content, '风险与不确定性'),
     duration_ms: durationMs,
     parse_mode,
-    error: raw.code === 'timeout' ? 'timeout' : (raw.code !== 0 ? `exit ${raw.code}` : null),
+    error_type: raw.error_type || null,
+    error: raw.error_type === 'enoent' ? 'not installed'
+      : raw.error_type === 'timeout' ? 'timeout'
+      : raw.error_type === 'nonzero' ? `exit ${raw.code}`
+      : raw.error_type ? raw.error_type
+      : null,
     judge_score: null,
     lessons: [],
   };

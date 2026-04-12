@@ -125,9 +125,19 @@ function makeRunner(timeoutMs, workDir) {
     proc.stderr.on('data', d => { stderr += d; });
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     return new Promise(res => {
-      const done = code => { clearTimeout(timer); res({ stdout, stderr, code }); };
-      proc.on('close', done);
-      proc.on('error', err => done(err.name === 'AbortError' ? 'timeout' : -1));
+      let resolved = false;
+      const done = (code, error_type = null) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        res({ stdout, stderr, code, error_type });
+      };
+      proc.on('close', code => done(code, code !== 0 ? 'nonzero' : null));
+      proc.on('error', err => {
+        if (err.name === 'AbortError') done('timeout', 'timeout');
+        else if (err.code === 'ENOENT') done(-1, 'enoent');
+        else done(-1, 'spawn_error');
+      });
     });
   };
 }
@@ -204,6 +214,7 @@ async function main(argv) {
   const systemPrompt = buildGeneratorSystem('general');
   const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
+  const { formatManifest } = require('./format.js');
   process.stderr.write(`[braintrust] Running ${activeProviders.map(p => p.name).join(', ')} in parallel...\n`);
 
   const starts = {};
@@ -225,8 +236,14 @@ async function main(argv) {
     const adapted = p.adapt(raw);
     const r = normalize(p.name, raw, adapted, ms);
     results.push(r);
-    const status = r.error ? `⚠ ${r.error}` : `✓ ${(ms / 1000).toFixed(1)}s  parse_score=${r.parse_score.toFixed(2)}`;
+    const status = r.error ? `⚠ ${r.error_type || r.error}` : `✓ ${(ms / 1000).toFixed(1)}s  parse_score=${r.parse_score.toFixed(2)}`;
     process.stderr.write(`[${p.name}: ${status}]\n`);
+  }
+
+  // Degraded mode warning
+  const successCount = results.filter(r => !r.error).length;
+  if (successCount < activeProviders.length) {
+    process.stderr.write(`\n[braintrust] ⚠ DEGRADED: ${successCount}/${activeProviders.length} models succeeded\n`);
   }
 
   // Print raw results
@@ -259,6 +276,9 @@ async function main(argv) {
     const runDir = join(OUTPUT_DIR, ts);
     saveArtifacts(runDir, userPrompt, raws, results, judgeOutput);
     process.stderr.write(`\n[saved → ${runDir}]\n`);
+
+    // Print run manifest
+    console.log('\n' + formatManifest({ results, ts, judgeModel: noJudge ? null : judgeModel, runDir }));
 
     // Persist to memory DB
     const parseScoreAvg = results.length

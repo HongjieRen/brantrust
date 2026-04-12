@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "description": "Multi-model AI fusion CLI — self-evolving",
   "bin": {
-    "braintrust": "./bin/braintrust"
+    "braintrust": "./bin/braintrust",
+    "braintrust-doctor": "./src/doctor.js",
+    "braintrust-server": "./src/server.js"
   },
   "main": "src/main.js",
   "scripts": {
