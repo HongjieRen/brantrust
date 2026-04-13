@@ -23,7 +23,7 @@ ok()   { echo -e "  ${GREEN}✓${NC}  $1"; }
 fail() { echo -e "  ${RED}✗${NC}  $1"; }
 warn() { echo -e "  ${YELLOW}!${NC}  $1"; }
 
-SKILL_URL="https://raw.githubusercontent.com/HongjieRen/braintrust-lite/main/skills/consult/SKILL.md"
+SKILL_URL="https://raw.githubusercontent.com/HongjieRen/braintrust/main/skills/consult/SKILL.md"
 SKILL_DIR="$HOME/.claude/skills/consult"
 SKILL_PATH="$SKILL_DIR/SKILL.md"
 
