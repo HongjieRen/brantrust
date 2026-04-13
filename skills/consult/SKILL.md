@@ -1,6 +1,6 @@
 ---
 name: consult
-version: 1.4.0
+version: 1.5.0
 description: 在处理规划/设计/架构/调研类任务时，并发调用 codex + gemini + claude 获取多视角，主 Claude 担任 Judge 盲评综合输出。支持渐进式多轮对话和自动更新。
 ---
 
@@ -71,14 +71,23 @@ curl -fsSL "https://raw.githubusercontent.com/HongjieRen/braintrust/main/skills/
 
 ### Judge 输出格式（必须分节，供多轮渐进加载）
 
-每轮 Judge 输出**强制使用以下四节**，不可合并：
+每轮 Judge 输出**强制使用以下五节**，不可合并、不可省略：
 
 ```
+### PERSPECTIVES
+每个模型的核心立场，**逐模型列出**，不可合并，不可说"各模型均认为"：
+- **Model A**：[该模型最核心的2-3个主张 / 独特视角，用具体措辞引用原文观点]
+- **Model B**：[同上]
+- **Model C**：[同上]
+
 ### VERDICT
-<核心结论，1-3句，永远保留进历史>
+<核心结论，1-3句。必须说明你采纳了哪个模型的哪个观点，以及理由>
 
 ### REASONING
-<关键推理和裁决依据，有追问才加载>
+<深度推理。强制要求：
+ 1. 至少引用2处模型间的具体分歧或差异（"Model A 认为X，Model B 认为Y，两者差异在于..."）
+ 2. 对每个关键判断说明为什么选A而不选B/C（不允许只说"综合来看"）
+ 3. 如果三模型观点一致，必须挖掘细节差异，或标注"三模型在X点上高度一致，其共同理由是...">
 
 ### TRADEOFFS
 <权衡分析、已排除方案及理由，用户问"有没有其他方案"时加载>
@@ -86,6 +95,8 @@ curl -fsSL "https://raw.githubusercontent.com/HongjieRen/braintrust/main/skills/
 ### OPEN_QUESTIONS
 <未解决的分歧或待确认的假设，用户问"还有什么不确定"时加载>
 ```
+
+**PERSPECTIVES 的写法原则**：逐字从模型原文中提炼，不要意译或合并。如果 Model A 说"用 Redis 做 session"，就写"用 Redis 做 session"，不要写"推荐缓存方案"。
 
 ---
 
@@ -166,7 +177,7 @@ Current best: <当前推荐方案一句话>
 !deep     切换到完整记忆（带最近1轮 REASONING + TRADEOFFS，适合复杂设计）
 /done     退出 Consult 会话模式（!stop 同效）
 !deltas   展开本轮三模型核心主张各一句（不显示原文全文）
-!raw      展开本轮三模型完整原始回答
+!raw      重新调用 consult(show_raw:true)，展示三模型完整原始回答（不经 Judge）
 ```
 
 ---
@@ -179,8 +190,11 @@ only        (可选) "codex" | "gemini" | "claude" — 只调用一个
 skip        (可选) ["codex"] | ["gemini"] | ["claude"] — 跳过某个
 timeout_sec (可选) 每个模型超时秒数，默认 90；传 0 = 不限时等待完成
 blind       (可选) 默认 true；传 false 可直接看真实模型名称
+show_raw    (可选) 默认 false；传 true = 直接展示三模型原始回答，跳过 Judge 融合
 cwd         (可选) 子进程工作目录
 ```
+
+**`show_raw: true` 使用场景**：用户说"让我自己看看三个模型分别说了什么"、"不用总结，直接给我原文"时，用此参数替代默认的 Judge 流程。
 
 ## timeout 选择策略
 

@@ -95,6 +95,11 @@ const CONSULT_TOOL = {
         description: '匿名化模型名称为 A/B/C，防止位置偏置（默认 true）',
         default: true,
       },
+      show_raw: {
+        type: 'boolean',
+        description: '直接返回三模型原始回答，不经过 Judge 融合（默认 false）。适合想自己阅读原文的场景。',
+        default: false,
+      },
       cwd: {
         type: 'string',
         description: '子进程工作目录（默认：当前进程 cwd）',
@@ -127,6 +132,7 @@ async function handleConsult(args) {
     only,
     timeout_sec = DEFAULT_TIMEOUT_S,
     blind = true,
+    show_raw = false,
     cwd,
   } = args;
 
@@ -170,7 +176,22 @@ async function handleConsult(args) {
 
   const successCount = results.filter(r => !r.error).length;
 
-  // Build labeled pairs
+  // show_raw mode: reveal model names, skip blind labeling, skip REVEAL footer
+  if (show_raw) {
+    const parts = [];
+    for (const r of results) {
+      const timing = r.error
+        ? ` ⚠ ${r.error_type || r.error}`
+        : ` (${(r.duration_ms / 1000).toFixed(1)}s)`;
+      parts.push(`## ${r.provider.toUpperCase()}${timing}\n\n${r.content || '[no output]'}`);
+    }
+    if (successCount < activeProviders.length) {
+      parts.push(`> ⚠ **DEGRADED**: Only ${successCount}/${activeProviders.length} models responded.`);
+    }
+    return { content: [{ type: 'text', text: parts.join('\n\n---\n\n') }] };
+  }
+
+  // Build labeled pairs (blind mode for Judge workflow)
   const labeled = blind
     ? assignBlindLabels(results)
     : results.map(r => ({ label: r.provider, result: r }));
