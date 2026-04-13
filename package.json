@@ -1,11 +1,11 @@
 {
   "name": "braintrust-lite",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Multi-model AI consultation MCP for Claude Code — runs Claude, Codex, and Gemini in parallel for Judge-style synthesis",
   "bin": {
-    "braintrust-lite": "./src/server.js",
-    "braintrust": "./bin/braintrust",
-    "braintrust-doctor": "./src/doctor.js"
+    "braintrust-lite": "src/server.js",
+    "braintrust": "bin/braintrust",
+    "braintrust-doctor": "src/doctor.js"
   },
   "main": "src/main.js",
   "files": [
@@ -34,7 +34,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/HongjieRen/braintrust.git"
+    "url": "git+https://github.com/HongjieRen/braintrust.git"
   },
   "license": "MIT"
 }
