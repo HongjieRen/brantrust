@@ -1,6 +1,6 @@
 ---
 name: consult
-version: 1.5.1
+version: 1.5.2
 description: 在处理规划/设计/架构/调研类任务时，并发调用 codex + gemini + claude 获取多视角，主 Claude 担任 Judge 盲评综合输出。支持渐进式多轮对话和自动更新。
 ---
 
@@ -107,11 +107,16 @@ curl -fsSL "https://raw.githubusercontent.com/HongjieRen/braintrust/main/skills/
 `/consult` 触发后，第一轮回复顶部显示：
 
 ```
-┌─ Consult 会话已启动 ──────────────────────────┐
-│ 模型：Codex · Gemini · Claude CLI              │
-│ 记忆：Balanced（可用 !brief / !deep 切换）      │
-│ 输入问题继续追问，或输入 /done 退出             │
-└────────────────────────────────────────────────┘
+┌─ Consult 会话已启动 ──────────────────────────────┐
+│ 模型：Codex · Gemini · Claude CLI                  │
+│                                                    │
+│ 退出会话：!done（或 !stop / 直接说"结束""退出"）   │
+│ 切换记忆：!brief | !deep                           │
+│ 查看原文：!deltas | !raw                           │
+│                                                    │
+│ ⚠ 注意：命令必须用 ! 开头，/done 会被 Claude Code  │
+│   拦截为 skill 调用，Claude 永远看不到它。          │
+└────────────────────────────────────────────────────┘
 ```
 
 ### 每轮状态栏（**每轮回复第一行**，始终显示）
@@ -163,19 +168,31 @@ Current best: <当前推荐方案一句话>
 
 ### 多轮终止条件
 
-- 用户输入 `/done`（或 `!stop`）
-- 用户明确表示满意（"好了"、"没问题了"）
-- 用户切换到无关新话题
-- 已进行 5 轮（自动退出，告知用户可重新 `/consult`）
+- 用户输入 `!done` 或 `!stop`（`/done` 不可用，会被 Claude Code 拦截）
+- 用户以自然语言表示结束：退出 / 结束 / 不用了 / 可以了 / 先这样 / exit / quit / stop / done / 好了 / 没问题了（判断需保守，模糊情况继续会话）
+- 用户明确切换到与当前议题无关的新话题（仅在切换意图非常明确时触发，避免误判）
+- 已进行 **4 轮**时，在状态栏后追加一行提示：`⚠ 本会话已进行 4 轮，再问一轮后将自动结束。输入 !done 立即退出，或继续追问。`
+- 已进行 **5 轮**（自动退出）
 
 退出时显示：`── Consult 会话结束（共 {N} 轮）──`
 
 ### 用户控制命令
 
+**退出**
 ```
-!brief    切换到精简记忆（只带 VERDICT，适合快速迭代）
-!deep     切换到完整记忆（带最近1轮 REASONING + TRADEOFFS，适合复杂设计）
-/done     退出 Consult 会话模式（!stop 同效）
+!done     退出 Consult 会话模式（主命令）
+!stop     同上（别名，向后兼容）
+```
+⚠ 不要用 `/done`——`/` 前缀会被 Claude Code 拦截为 skill 调用，Claude 永远看不到。
+
+**切换记忆模式**
+```
+!brief    精简记忆（只带 VERDICT，适合快速迭代）
+!deep     完整记忆（带最近1轮 REASONING + TRADEOFFS，适合复杂设计）
+```
+
+**查看原文**
+```
 !deltas   展开本轮三模型核心主张各一句（不显示原文全文）
 !raw      旁路展示本轮三模型原文（使用 REVEAL 映射表替换为真实模型名）。
           约束：① 不重新调用 consult，仅复用主 Claude 已持有的本轮回答；

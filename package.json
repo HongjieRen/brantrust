@@ -1,6 +1,6 @@
 {
   "name": "braintrust-lite",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Multi-model AI consultation MCP for Claude Code — runs Claude, Codex, and Gemini in parallel for Judge-style synthesis",
   "bin": {
     "braintrust-lite": "src/server.js",
